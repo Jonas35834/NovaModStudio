@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawn } from 'child_process';
+const fsp = fs.promises;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -31,6 +33,16 @@ function createWindow() {
 ipcMain.handle('select-directory', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled) return null;
+  return result.filePaths[0];
+});
+
+// Datei-Auswahldialog (z.B. Textur auswählen)
+ipcMain.handle('select-file', async (_event, filters = []) => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters,
   });
   if (result.canceled) return null;
   return result.filePaths[0];
@@ -194,6 +206,184 @@ ipcMain.handle('delete-file', async (_event, filePath: string) => {
       }
     }
     return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Helper: broadcast event to all renderer windows
+function broadcast(channel: string, ...args: any[]) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send(channel, ...args);
+  }
+}
+
+// Create Item handler
+ipcMain.handle('modstudio:create-item', async (_event, payload: any) => {
+  try {
+    const { projectPath, modId, itemName, maxStack = 64, tooltip = '', tab = 'misc', texturePath } = payload;
+    if (!projectPath || !modId || !itemName) return { success: false, error: 'Missing required fields' };
+
+    const packagePath = modId.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const resourcesDir = path.join(projectPath, 'src', 'main', 'resources');
+    const assetsDir = path.join(resourcesDir, 'assets', modId);
+    const javaDir = path.join(projectPath, 'src', 'main', 'java', 'net', 'novamod', packagePath);
+
+    // Ensure directories
+    await fsp.mkdir(path.join(assetsDir, 'textures', 'item'), { recursive: true });
+    await fsp.mkdir(path.join(assetsDir, 'models', 'item'), { recursive: true });
+    await fsp.mkdir(javaDir, { recursive: true });
+
+    // Copy texture if provided
+    let textureName = itemName.toLowerCase();
+    if (texturePath && fs.existsSync(texturePath)) {
+      const ext = path.extname(texturePath);
+      textureName = `${itemName.toLowerCase()}${ext}`;
+      const dest = path.join(assetsDir, 'textures', 'item', path.basename(textureName));
+      await fsp.copyFile(texturePath, dest);
+      textureName = path.basename(texturePath, ext);
+    }
+
+    // Write item model JSON
+    const itemModel = {
+      parent: 'item/generated',
+      textures: {
+        layer0: `${modId}:item/${textureName}`
+      }
+    };
+    const modelPath = path.join(assetsDir, 'models', 'item', `${itemName.toLowerCase()}.json`);
+    if (fs.existsSync(modelPath)) {
+      // conflict
+      broadcast('modstudio:conflict', { path: modelPath, type: 'item-model' });
+      return { success: false, conflict: true, path: modelPath };
+    }
+    await fsp.writeFile(modelPath, JSON.stringify(itemModel, null, 2), 'utf-8');
+
+    // Create simple registry Java class (CustomItems)
+    const registryDir = path.join(javaDir, 'registry');
+    await fsp.mkdir(registryDir, { recursive: true });
+    const className = 'CustomItems';
+    const javaFile = path.join(registryDir, `${className}.java`);
+    let javaContent = '';
+    if (fs.existsSync(javaFile)) {
+      javaContent = await fsp.readFile(javaFile, 'utf-8');
+      // Attempt to append a new field if not present
+      if (!javaContent.includes(`public static final Item ${itemName.toUpperCase()}_ITEM`)) {
+        const insert = `\n    public static final net.minecraft.world.item.Item ${itemName.toUpperCase()}_ITEM = new net.minecraft.world.item.Item(new net.minecraft.world.item.Item.Properties().stacksTo(${maxStack}));\n`;
+        // naive append before last closing brace
+        javaContent = javaContent.replace(/}\s*$/,'    static {\n        // registration left as manual: register here if necessary\n    }\n}\n');
+      }
+    } else {
+      javaContent = `package net.novamod.${packagePath}.registry;\n\npublic class ${className} {\n    // Generated items placeholder. Add registrations to your mod initializer.\n}\n`;
+    }
+    await fsp.writeFile(javaFile, javaContent, 'utf-8');
+
+    return { success: true, files: [modelPath, javaFile] };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Create Block handler
+ipcMain.handle('modstudio:create-block', async (_event, payload: any) => {
+  try {
+    const { projectPath, modId, blockName, hardness = 1.5, resistance = 6.0, sound = 'stone', tool = 'pickaxe', harvestLevel = 0, texturePath } = payload;
+    if (!projectPath || !modId || !blockName) return { success: false, error: 'Missing required fields' };
+
+    const packagePath = modId.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const resourcesDir = path.join(projectPath, 'src', 'main', 'resources');
+    const assetsDir = path.join(resourcesDir, 'assets', modId);
+    const javaDir = path.join(projectPath, 'src', 'main', 'java', 'net', 'novamod', packagePath);
+
+    await fsp.mkdir(path.join(assetsDir, 'textures', 'block'), { recursive: true });
+    await fsp.mkdir(path.join(assetsDir, 'models', 'block'), { recursive: true });
+    await fsp.mkdir(path.join(assetsDir, 'models', 'item'), { recursive: true });
+    await fsp.mkdir(path.join(resourcesDir, 'blockstates'), { recursive: true });
+    await fsp.mkdir(javaDir, { recursive: true });
+
+    let textureName = blockName.toLowerCase();
+    if (texturePath && fs.existsSync(texturePath)) {
+      const ext = path.extname(texturePath);
+      const dest = path.join(assetsDir, 'textures', 'block', `${blockName.toLowerCase()}${ext}`);
+      await fsp.copyFile(texturePath, dest);
+      textureName = path.basename(texturePath, ext);
+    }
+
+    // block model
+    const blockModel = {
+      parent: 'block/cube_all',
+      textures: { all: `${modId}:block/${textureName}` }
+    };
+    const blockModelPath = path.join(assetsDir, 'models', 'block', `${blockName.toLowerCase()}.json`);
+    if (fs.existsSync(blockModelPath)) {
+      broadcast('modstudio:conflict', { path: blockModelPath, type: 'block-model' });
+      return { success: false, conflict: true, path: blockModelPath };
+    }
+    await fsp.writeFile(blockModelPath, JSON.stringify(blockModel, null, 2), 'utf-8');
+
+    // item model for block
+    const itemModel = { parent: `${modId}:block/${blockName.toLowerCase()}` };
+    const itemModelPath = path.join(assetsDir, 'models', 'item', `${blockName.toLowerCase()}.json`);
+    await fsp.writeFile(itemModelPath, JSON.stringify(itemModel, null, 2), 'utf-8');
+
+    // blockstate
+    const blockstate = {
+      variants: { "": { model: `${modId}:block/${blockName.toLowerCase()}` } }
+    };
+    const blockstatePath = path.join(resourcesDir, 'blockstates', `${blockName.toLowerCase()}.json`);
+    await fsp.writeFile(blockstatePath, JSON.stringify(blockstate, null, 2), 'utf-8');
+
+    // minimal registry class
+    const registryDir = path.join(javaDir, 'registry');
+    await fsp.mkdir(registryDir, { recursive: true });
+    const className = 'CustomBlocks';
+    const javaFile = path.join(registryDir, `${className}.java`);
+    const javaContent = `package net.novamod.${packagePath}.registry;\n\npublic class ${className} {\n    // Generated blocks placeholder. Add registrations to your mod initializer.\n}\n`;
+    if (!fs.existsSync(javaFile)) await fsp.writeFile(javaFile, javaContent, 'utf-8');
+
+    return { success: true, files: [blockModelPath, itemModelPath, blockstatePath, javaFile] };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Start Gradle build and stream output
+ipcMain.handle('modstudio:start-build', async (_event, projectRoot: string) => {
+  try {
+    if (!projectRoot) return { success: false, error: 'projectRoot missing' };
+    const isWin = process.platform === 'win32';
+    const gradleCmd = isWin ? 'gradlew.bat' : './gradlew';
+    const cmdPath = path.join(projectRoot, gradleCmd);
+    if (!fs.existsSync(cmdPath)) {
+      // maybe use system gradle
+      broadcast('modstudio:build-output', `Gradle wrapper not found at ${cmdPath}. Attempting 'gradle' from PATH...`);
+    }
+
+    const proc = spawn(isWin ? cmdPath : gradleCmd, ['build'], { cwd: projectRoot, shell: false });
+
+    proc.stdout.on('data', (data) => {
+      broadcast('modstudio:build-output', data.toString());
+    });
+    proc.stderr.on('data', (data) => {
+      broadcast('modstudio:build-output', data.toString());
+    });
+
+    proc.on('close', async (code) => {
+      const success = code === 0;
+      // find jar
+      let jarPath: string | null = null;
+      try {
+        const libsDir = path.join(projectRoot, 'build', 'libs');
+        if (fs.existsSync(libsDir)) {
+          const files = await fsp.readdir(libsDir);
+          const jars = files.filter(f => f.endsWith('.jar')).map(f => path.join(libsDir, f));
+          if (jars.length) jarPath = jars.sort().pop() || null;
+        }
+      } catch (e) {}
+      broadcast('modstudio:build-finished', { success, code, jarPath });
+    });
+
+    return { success: true, message: 'Build started' };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
