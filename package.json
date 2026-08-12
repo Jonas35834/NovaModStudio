@@ -11,6 +11,10 @@
   },
   "keywords": [],
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jonas35834/NovaModStudio.git"
+  },
   "license": "MIT",
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

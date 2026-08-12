@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Home, FolderPlus, BookOpen, Server, GraduationCap, Settings, Plus, Folder, Check, AlertCircle, Code, Layers } from 'lucide-react';
 import CodeEditor from './CodeEditor';
 
