@@ -1,0 +1,30 @@
+name: Build NovaMod Studio
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Abhängigkeiten installieren
+        run: npm ci --legacy-peer-deps
+
+      - name: Electron-Hauptprozess kompilieren
+        run: npm run build:electron
+
+      - name: React & Frontend bauen
+        run: npm run build
