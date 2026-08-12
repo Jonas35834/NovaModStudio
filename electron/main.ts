@@ -126,6 +126,15 @@ public class ${className} implements ModInitializer {
       JSON.stringify(novaMetadata, null, 2)
     );
 
+    // Minimal Gradle scaffold (build files only) - wrapper not generated automatically
+    const buildGradle = `// Minimal build.gradle placeholder\nplugins {\n    id 'java'\n}\n\ngroup = 'net.novamod'\nversion = '${version}'\n\nrepositories {\n    mavenCentral()\n}\n\n// NOTE: To build a Fabric mod, add Fabric Loom plugin and dependencies here.\n// You can generate Gradle wrapper with a local Gradle installation: ${'gradle wrapper'}\n`;
+    const settingsGradle = `rootProject.name = '${name}'\n`;
+    const gradleProps = `org.gradle.jvmargs=-Xmx2g\njavaVersion=21\nminecraftVersion=${mcVersion}\n`;
+
+    fs.writeFileSync(path.join(targetDir, 'build.gradle'), buildGradle);
+    fs.writeFileSync(path.join(targetDir, 'settings.gradle'), settingsGradle);
+    fs.writeFileSync(path.join(targetDir, 'gradle.properties'), gradleProps);
+
     return { success: true, path: targetDir };
   } catch (error: any) {
     return { success: false, error: error.message };
