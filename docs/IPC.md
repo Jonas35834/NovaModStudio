@@ -47,3 +47,5 @@ Events (Main -> Renderer):
   - Wird vom Main-Prozess gesendet, wenn eine Ziel-Datei bereits existiert. UI kann darauf reagieren und Nutzerentscheidung anstoßen.
 
 Hinweis: Alle Renderer-Aufrufe müssen über die Preload-Bridge (window.electronAPI) laufen. Keine direkten Node-Zugriffe im React-Code.
+
+Auto-Registrierung: Bei Erzeugung von Items/Blocks erstellt NovaMod Studio Registry-Klassen (net.novamod.<modid>.registry.CustomItems / CustomBlocks) mit statischen Feldern und einer registerAll()-Methode. Die Main-Modklasse (die Klasse welche ModInitializer implementiert) wird automatisch auf vorhandensein überprüft und - falls gefunden - um einen Aufruf von CustomItems.registerAll() / CustomBlocks.registerAll() in onInitialize() ergänzt. Wenn keine Initializer-Klasse gefunden wird, wird eine Warnung ausgesendet und die Registry-Klassen bleiben als Platzhalter vorhanden.
