@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { Home, FolderPlus, BookOpen, Server, GraduationCap, Settings, Plus, Folder, Check, AlertCircle, Code, Layers } from 'lucide-react';
 import CodeEditor from './CodeEditor';
+import ItemEditor from './components/ItemEditor';
+import BlockEditor from './components/BlockEditor';
+import { useEffect } from 'react';
 
 const api = (window as any).electronAPI;
 
@@ -33,6 +36,45 @@ export default function App() {
 
   // Aktives Projekt
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
+
+    // Editor & Build UI state
+    const [showItemEditor, setShowItemEditor] = useState(false);
+    const [showBlockEditor, setShowBlockEditor] = useState(false);
+    const [showBuildModal, setShowBuildModal] = useState(false);
+    const [buildLogs, setBuildLogs] = useState<string[]>([]);
+    const [buildRunning, setBuildRunning] = useState(false);
+    const [buildResult, setBuildResult] = useState<any>(null);
+
+    useEffect(() => {
+      let offOutput: any = null;
+      let offFinished: any = null;
+      if (showBuildModal) {
+        // subscribe
+        offOutput = api.onBuildOutput((line: string) => {
+          setBuildLogs((l: string[]) => [...l, line]);
+        });
+        offFinished = api.onBuildFinished((res: any) => {
+          setBuildRunning(false);
+          setBuildResult(res);
+        });
+      }
+      return () => {
+        if (offOutput) offOutput();
+        if (offFinished) offFinished();
+      };
+    }, [showBuildModal]);
+
+    const startBuild = async () => {
+      if (!currentProject) return;
+      setBuildLogs([]);
+      setBuildRunning(true);
+      setBuildResult(null);
+      setShowBuildModal(true);
+      await api.startBuild(currentProject.path);
+    };
+
+    const openItemEditor = () => setShowItemEditor(true);
+    const openBlockEditor = () => setShowBlockEditor(true);
 
   const navItems = [
     { id: 'home', label: 'Start', icon: Home },
@@ -211,12 +253,9 @@ export default function App() {
                     </p>
                   </div>
                   <div className="flex gap-3">
-                    <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2">
-                      MOD TESTEN
-                    </button>
-                    <button className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-semibold shadow-lg shadow-indigo-600/20 transition-all">
-                      EXPORTIEREN
-                    </button>
+                    <button onClick={openItemEditor} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-semibold shadow transition-all">Item Editor</button>
+                    <button onClick={openBlockEditor} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-semibold shadow transition-all">Block Editor</button>
+                    <button onClick={startBuild} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-semibold shadow-lg shadow-indigo-600/20 transition-all">MOD TESTEN / EXPORTIEREN</button>
                   </div>
                 </header>
 
@@ -436,6 +475,49 @@ export default function App() {
                 </button>
               )}
             </footer>
+          </div>
+        </div>
+      )}
+
+      {/* Item / Block Editors */}
+      {showItemEditor && currentProject && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-3xl p-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <ItemEditor projectPath={currentProject.path} modId={currentProject.modId} onClose={() => setShowItemEditor(false)} onCreated={(r) => console.log('item created', r)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBlockEditor && currentProject && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-3xl p-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <BlockEditor projectPath={currentProject.path} modId={currentProject.modId} onClose={() => setShowBlockEditor(false)} onCreated={(r) => console.log('block created', r)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Build modal */}
+      {showBuildModal && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4 z-60">
+          <div className="w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-2xl p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-bold text-lg">Build Logs</h3>
+              <div className="flex gap-2">
+                <button onClick={() => { setShowBuildModal(false); setBuildRunning(false); }} className="px-3 py-1 bg-slate-700 rounded">Schließen</button>
+              </div>
+            </div>
+            <div className="h-80 overflow-auto bg-black/60 p-3 rounded text-xs font-mono text-white">
+              {buildLogs.map((l, i) => (<div key={i}>{l}</div>))}
+            </div>
+            {buildResult && (
+              <div className="mt-3 text-sm">
+                Ergebnis: {buildResult.success ? 'Erfolg' : 'Fehler'} {buildResult.jarPath && <span>JAR: {buildResult.jarPath}</span>}
+              </div>
+            )}
           </div>
         </div>
       )}

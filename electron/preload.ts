@@ -8,4 +8,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileContent: (data: any) => ipcRenderer.invoke('save-file-content', data),
   createFile: (data: any) => ipcRenderer.invoke('create-file', data),
   deleteFile: (path: string) => ipcRenderer.invoke('delete-file', path),
+
+  // Mod Studio APIs
+  createItem: (payload: any) => ipcRenderer.invoke('modstudio:create-item', payload),
+  createBlock: (payload: any) => ipcRenderer.invoke('modstudio:create-block', payload),
+  startBuild: (projectRoot: string) => ipcRenderer.invoke('modstudio:start-build', projectRoot),
+  selectFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke('select-file', filters),
+
+  // Streaming build output
+  onBuildOutput: (cb: (line: string) => void) => {
+    const listener = (_: any, line: string) => cb(line);
+    ipcRenderer.on('modstudio:build-output', listener);
+    return () => ipcRenderer.removeListener('modstudio:build-output', listener);
+  },
+  onBuildFinished: (cb: (result: any) => void) => {
+    const listener = (_: any, result: any) => cb(result);
+    ipcRenderer.on('modstudio:build-finished', listener);
+    return () => ipcRenderer.removeListener('modstudio:build-finished', listener);
+  },
 });
