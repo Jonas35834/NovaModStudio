@@ -259,24 +259,90 @@ ipcMain.handle('modstudio:create-item', async (_event, payload: any) => {
     }
     await fsp.writeFile(modelPath, JSON.stringify(itemModel, null, 2), 'utf-8');
 
-    // Create simple registry Java class (CustomItems)
+    // Create or update registry Java class (CustomItems) with field and registerAll
     const registryDir = path.join(javaDir, 'registry');
     await fsp.mkdir(registryDir, { recursive: true });
     const className = 'CustomItems';
     const javaFile = path.join(registryDir, `${className}.java`);
+
+    const fieldName = `${itemName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_ITEM`;
+    const idName = itemName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
     let javaContent = '';
     if (fs.existsSync(javaFile)) {
       javaContent = await fsp.readFile(javaFile, 'utf-8');
-      // Attempt to append a new field if not present
-      if (!javaContent.includes(`public static final Item ${itemName.toUpperCase()}_ITEM`)) {
-        const insert = `\n    public static final net.minecraft.world.item.Item ${itemName.toUpperCase()}_ITEM = new net.minecraft.world.item.Item(new net.minecraft.world.item.Item.Properties().stacksTo(${maxStack}));\n`;
-        // naive append before last closing brace
-        javaContent = javaContent.replace(/}\s*$/,'    static {\n        // registration left as manual: register here if necessary\n    }\n}\n');
+
+      // ensure registerAll method exists
+      if (!/public\s+static\s+void\s+registerAll\s*\(/.test(javaContent)) {
+        // add a basic registerAll method at end of class
+        javaContent = javaContent.replace(/}\s*$/,'\n    public static void registerAll() {\n        // registrations will be appended here by NovaMod Studio\n    }\n}\n');
       }
+
+      // add field if missing
+      if (!new RegExp(`public static final .* ${fieldName}`).test(javaContent)) {
+        const fieldDecl = `    public static final net.minecraft.world.item.Item ${fieldName} = new net.minecraft.world.item.Item(new net.minecraft.world.item.Item.Properties().stacksTo(${maxStack}));\n`;
+        // place the field before registerAll
+        javaContent = javaContent.replace(/public\s+static\s+void\s+registerAll\s*\(\s*\)\s*\{/, fieldDecl + '\n    public static void registerAll() {');
+      }
+
+      // ensure registration call inside registerAll
+      const regCall = `Registry.register(Registries.ITEM, new Identifier(\"${modId}\", \"${idName}\"), ${fieldName});`;
+      if (!javaContent.includes(regCall)) {
+        javaContent = javaContent.replace(/public\s+static\s+void\s+registerAll\s*\(\s*\)\s*\{/, match => match + `\n        ${regCall}`);
+      }
+
+      // ensure imports
+      if (!javaContent.includes('import net.minecraft.registry.Registry;')) {
+        javaContent = javaContent.replace(/package\s+([\w\.]+);/, `package $1;\n\nimport net.minecraft.registry.Registry;\nimport net.minecraft.registry.Registries;\nimport net.minecraft.util.Identifier;`);
+      }
+
+      await fsp.writeFile(javaFile, javaContent, 'utf-8');
     } else {
-      javaContent = `package net.novamod.${packagePath}.registry;\n\npublic class ${className} {\n    // Generated items placeholder. Add registrations to your mod initializer.\n}\n`;
+      // create new registry class
+      javaContent = `package net.novamod.${packagePath}.registry;\n\nimport net.minecraft.world.item.Item;\nimport net.minecraft.registry.Registry;\nimport net.minecraft.registry.Registries;\nimport net.minecraft.util.Identifier;\n\npublic class ${className} {\n\n    public static final Item ${fieldName} = new Item(new Item.Properties().stacksTo(${maxStack}));\n\n    public static void registerAll() {\n        Registry.register(Registries.ITEM, new Identifier("${modId}", "${idName}"), ${fieldName});\n    }\n}\n`;
+      await fsp.writeFile(javaFile, javaContent, 'utf-8');
     }
-    await fsp.writeFile(javaFile, javaContent, 'utf-8');
+
+    // Try to find mod initializer and ensure it calls CustomItems.registerAll();
+    try {
+      const candidates: string[] = [];
+      async function walk(dir: string) {
+        const names = await fsp.readdir(dir);
+        for (const n of names) {
+          const p = path.join(dir, n);
+          const st = await fsp.stat(p);
+          if (st.isDirectory()) await walk(p);
+          else if (n.endsWith('.java')) candidates.push(p);
+        }
+      }
+      await walk(javaDir);
+
+      let initFile: string | null = null;
+      for (const f of candidates) {
+        const content = await fsp.readFile(f, 'utf-8');
+        if (content.includes('implements ModInitializer') || content.includes('onInitialize(')) {
+          initFile = f; break;
+        }
+      }
+
+      if (initFile) {
+        let initContent = await fsp.readFile(initFile, 'utf-8');
+        // add import for registry
+        const importLine = `import net.novamod.${packagePath}.registry.${className};`;
+        if (!initContent.includes(importLine)) {
+          initContent = initContent.replace(/package\s+[\w\.]+;\s*/, match => match + '\n' + importLine + '\n');
+        }
+        // insert call into onInitialize
+        if (!initContent.includes(`${className}.registerAll()`)) {
+          initContent = initContent.replace(/public\s+void\s+onInitialize\s*\(\s*\)\s*\{/, match => match + `\n        ${className}.registerAll();`);
+          await fsp.writeFile(initFile, initContent, 'utf-8');
+        }
+      } else {
+        broadcast('modstudio:build-output', 'Warnung: Keine Mod-Initializer-Klasse gefunden. Bitte registriere CustomItems.registerAll() manuell.');
+      }
+    } catch (e) {
+      // non-fatal
+    }
 
     return { success: true, files: [modelPath, javaFile] };
   } catch (error: any) {
@@ -333,13 +399,86 @@ ipcMain.handle('modstudio:create-block', async (_event, payload: any) => {
     const blockstatePath = path.join(resourcesDir, 'blockstates', `${blockName.toLowerCase()}.json`);
     await fsp.writeFile(blockstatePath, JSON.stringify(blockstate, null, 2), 'utf-8');
 
-    // minimal registry class
+    // Create or update registry class (CustomBlocks)
     const registryDir = path.join(javaDir, 'registry');
     await fsp.mkdir(registryDir, { recursive: true });
     const className = 'CustomBlocks';
     const javaFile = path.join(registryDir, `${className}.java`);
-    const javaContent = `package net.novamod.${packagePath}.registry;\n\npublic class ${className} {\n    // Generated blocks placeholder. Add registrations to your mod initializer.\n}\n`;
-    if (!fs.existsSync(javaFile)) await fsp.writeFile(javaFile, javaContent, 'utf-8');
+
+    const fieldName = `${blockName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_BLOCK`;
+    const idName = blockName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const itemField = `${blockName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_BLOCK_ITEM`;
+
+    let javaContent = '';
+    if (fs.existsSync(javaFile)) {
+      javaContent = await fsp.readFile(javaFile, 'utf-8');
+
+      if (!/public\s+static\s+void\s+registerAll\s*\(/.test(javaContent)) {
+        javaContent = javaContent.replace(/}\s*$/,'\n    public static void registerAll() {\n        // registrations will be appended here by NovaMod Studio\n    }\n}\n');
+      }
+
+      if (!new RegExp(`public static final .* ${fieldName}`).test(javaContent)) {
+        const fieldDecl = `    public static final net.minecraft.world.level.block.Block ${fieldName} = new net.minecraft.world.level.block.Block(net.minecraft.world.level.block.BlockBehaviour.Properties.of(net.minecraft.world.level.material.Material.STONE).strength(${hardness}f, ${resistance}f));\n    public static final net.minecraft.world.item.BlockItem ${itemField} = new net.minecraft.world.item.BlockItem(${fieldName}, new net.minecraft.world.item.Item.Properties());\n`;
+        javaContent = javaContent.replace(/public\s+static\s+void\s+registerAll\s*\(\s*\)\s*\{/, fieldDecl + '\n    public static void registerAll() {');
+      }
+
+      const regBlockCall = `Registry.register(Registries.BLOCK, new Identifier(\"${modId}\", \"${idName}\"), ${fieldName});`;
+      const regItemCall = `Registry.register(Registries.ITEM, new Identifier(\"${modId}\", \"${idName}\"), ${itemField});`;
+      if (!javaContent.includes(regBlockCall)) {
+        javaContent = javaContent.replace(/public\s+static\s+void\s+registerAll\s*\(\s*\)\s*\{/, match => match + `\n        ${regBlockCall}`);
+      }
+      if (!javaContent.includes(regItemCall)) {
+        javaContent = javaContent.replace(/public\s+static\s+void\s+registerAll\s*\(\s*\)\s*\{/, match => match + `\n        ${regItemCall}`);
+      }
+
+      if (!javaContent.includes('import net.minecraft.registry.Registry;')) {
+        javaContent = javaContent.replace(/package\s+([\w\.]+);/, `package $1;\n\nimport net.minecraft.registry.Registry;\nimport net.minecraft.registry.Registries;\nimport net.minecraft.util.Identifier;`);
+      }
+
+      await fsp.writeFile(javaFile, javaContent, 'utf-8');
+    } else {
+      javaContent = `package net.novamod.${packagePath}.registry;\n\nimport net.minecraft.registry.Registry;\nimport net.minecraft.registry.Registries;\nimport net.minecraft.util.Identifier;\n\npublic class ${className} {\n\n    public static final net.minecraft.world.level.block.Block ${fieldName} = new net.minecraft.world.level.block.Block(net.minecraft.world.level.block.BlockBehaviour.Properties.of(net.minecraft.world.level.material.Material.STONE).strength(${hardness}f, ${resistance}f));\n    public static final net.minecraft.world.item.BlockItem ${itemField} = new net.minecraft.world.item.BlockItem(${fieldName}, new net.minecraft.world.item.Item.Properties());\n\n    public static void registerAll() {\n        Registry.register(Registries.BLOCK, new Identifier("${modId}", "${idName}"), ${fieldName});\n        Registry.register(Registries.ITEM, new Identifier("${modId}", "${idName}"), ${itemField});\n    }\n}\n`;
+      await fsp.writeFile(javaFile, javaContent, 'utf-8');
+    }
+
+    // Try to find mod initializer and ensure it calls CustomBlocks.registerAll();
+    try {
+      const candidates: string[] = [];
+      async function walk(dir: string) {
+        const names = await fsp.readdir(dir);
+        for (const n of names) {
+          const p = path.join(dir, n);
+          const st = await fsp.stat(p);
+          if (st.isDirectory()) await walk(p);
+          else if (n.endsWith('.java')) candidates.push(p);
+        }
+      }
+      await walk(javaDir);
+
+      let initFile: string | null = null;
+      for (const f of candidates) {
+        const content = await fsp.readFile(f, 'utf-8');
+        if (content.includes('implements ModInitializer') || content.includes('onInitialize(')) {
+          initFile = f; break;
+        }
+      }
+
+      if (initFile) {
+        let initContent = await fsp.readFile(initFile, 'utf-8');
+        const importLine = `import net.novamod.${packagePath}.registry.${className};`;
+        if (!initContent.includes(importLine)) {
+          initContent = initContent.replace(/package\s+[\w\.]+;\s*/, match => match + '\n' + importLine + '\n');
+        }
+        if (!initContent.includes(`${className}.registerAll()`)) {
+          initContent = initContent.replace(/public\s+void\s+onInitialize\s*\(\s*\)\s*\{/, match => match + `\n        ${className}.registerAll();`);
+          await fsp.writeFile(initFile, initContent, 'utf-8');
+        }
+      } else {
+        broadcast('modstudio:build-output', 'Warnung: Keine Mod-Initializer-Klasse gefunden. Bitte registriere CustomBlocks.registerAll() manuell.');
+      }
+    } catch (e) {
+      // non-fatal
+    }
 
     return { success: true, files: [blockModelPath, itemModelPath, blockstatePath, javaFile] };
   } catch (error: any) {
